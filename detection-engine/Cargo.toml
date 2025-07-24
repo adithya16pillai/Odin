@@ -1,0 +1,11 @@
+[package]
+name = "detection-engine"
+version = "0.1.0"
+edition = "2021"
+
+description = "High-performance detection engine for identity spoofing."
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+actix-web = "4"
+# TODO: Add other dependencies as needed
