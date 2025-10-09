@@ -50,16 +50,13 @@ impl DeviceFingerprint {
             device_memory,
         };
         
-        // Generate fingerprint hash
         fingerprint.fingerprint_hash = fingerprint.generate_hash();
         fingerprint
     }
     
-    // Generate a unique hash for this device fingerprint
     fn generate_hash(&self) -> String {
         let mut hasher = Sha256::new();
         
-        // Add device properties to hash
         if let Some(os) = &self.os {
             hasher.update(os.as_bytes());
         }
@@ -79,17 +76,14 @@ impl DeviceFingerprint {
             hasher.update(audio.as_bytes());
         }
         
-        // Generate hash
         let result = hasher.finalize();
         format!("{:x}", result)
     }
     
-    // Similarity score with another fingerprint (0.0 to 1.0)
     pub fn similarity(&self, other: &Self) -> f64 {
         let mut matches = 0;
         let mut total = 0;
         
-        // Compare browser and OS
         if let (Some(os1), Some(os2)) = (&self.os, &other.os) {
             total += 1;
             if os1 == os2 {
@@ -104,7 +98,6 @@ impl DeviceFingerprint {
             }
         }
         
-        // Compare other properties
         if let (Some(res1), Some(res2)) = (&self.screen_resolution, &other.screen_resolution) {
             total += 1;
             if res1 == res2 {
@@ -126,9 +119,8 @@ impl DeviceFingerprint {
             }
         }
         
-        // Advanced fingerprint comparison
         if let (Some(canvas1), Some(canvas2)) = (&self.canvas_fingerprint, &other.canvas_fingerprint) {
-            total += 2; // Weighted higher
+            total += 2; 
             if canvas1 == canvas2 {
                 matches += 2;
             }

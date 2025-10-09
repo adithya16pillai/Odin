@@ -16,7 +16,6 @@ module Types
       ids.map { |id| context.schema.object_from_id(id, context) }
     end
 
-    # Add your root queries here
     field :me, Types::UserType, null: true, description: "Get the currently authenticated user"
     
     def me

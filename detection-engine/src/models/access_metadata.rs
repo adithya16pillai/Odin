@@ -40,9 +40,8 @@ impl AccessMetadata {
         }
     }
     
-    // Calculate distance in kilometers between two geo coordinates
     pub fn distance_to(&self, other: &Self) -> f64 {
-        const EARTH_RADIUS: f64 = 6371.0; // km
+        const EARTH_RADIUS: f64 = 6371.0;
         
         let lat1_rad = self.latitude * PI / 180.0;
         let lat2_rad = other.latitude * PI / 180.0;
@@ -57,12 +56,10 @@ impl AccessMetadata {
         EARTH_RADIUS * c
     }
     
-    // Calculate speed in km/h between this and previous access
     pub fn travel_speed(&self, previous: &Self) -> Option<f64> {
         let distance = self.distance_to(previous);
         let time_diff = self.timestamp.signed_duration_since(previous.timestamp);
         
-        // Convert time difference to hours
         let hours = time_diff.num_seconds() as f64 / 3600.0;
         
         if hours > 0.0 {
