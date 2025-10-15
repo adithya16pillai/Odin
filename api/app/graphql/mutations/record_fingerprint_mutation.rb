@@ -10,11 +10,9 @@ module Mutations
     field :errors, [String], null: true, description: "List of error messages"
     
     def resolve(fingerprint:, session_token: nil)
-      # Extract IP and user agent from context
       ip_address = context[:ip_address] || "unknown"
       user_agent = context[:user_agent] || "unknown"
       
-      # Find user and session if session_token is provided
       user = nil
       session = nil
       
@@ -23,7 +21,6 @@ module Mutations
         user = session&.user
       end
       
-      # Record the fingerprint
       device_fingerprint = DeviceFingerprint.record!(
         fingerprint,
         user: user,
