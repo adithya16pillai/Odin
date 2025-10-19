@@ -13,9 +13,8 @@ module Mutations
     def resolve(email:, password:)
       user = User.find_by(email: email.downcase.strip)
       
-      # Record login attempt
       LoginAttempt.record_attempt!(
-        user || User.new(email: email), # Create a dummy user for failed attempts
+        user || User.new(email: email), 
         success: user&.authenticate(password),
         ip_address: context[:ip_address] || "unknown",
         user_agent: context[:user_agent] || "unknown",

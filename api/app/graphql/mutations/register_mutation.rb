@@ -16,7 +16,6 @@ module Mutations
       if user.save
         session = user.create_session!
         
-        # Record successful registration attempt
         LoginAttempt.record_attempt!(
           user,
           success: true,
@@ -32,7 +31,6 @@ module Mutations
           errors: nil
         }
       else
-        # Record failed registration attempt
         LoginAttempt.record_attempt!(
           User.new(email: email),
           success: false,
