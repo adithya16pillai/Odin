@@ -89,6 +89,59 @@ impl SyslogListener {
     }
 }
 
+// ============================================
+// Async Syslog Listener
+// ============================================
+
+use tokio::net::UdpSocket as AsyncUdpSocket;
+use tokio::sync::mpsc;
+
+/// Async version of SyslogListener for use with tokio
+pub struct AsyncSyslogListener {
+    socket: AsyncUdpSocket,
+}
+
+impl AsyncSyslogListener {
+    /// Create a new async syslog listener bound to the given address
+    pub async fn new(address: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let socket = AsyncUdpSocket::bind(address).await?;
+        Ok(AsyncSyslogListener { socket })
+    }
+
+    /// Run the syslog listener, sending events through the channel
+    ///
+    /// This method runs indefinitely until the channel is closed or
+    /// an unrecoverable error occurs.
+    pub async fn run(
+        &mut self,
+        tx: mpsc::Sender<LogEvent>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut buf = [0u8; 1024];
+
+        log::info!("Async syslog listener started");
+
+        loop {
+            match self.socket.recv_from(&mut buf).await {
+                Ok((size, _addr)) => {
+                    let message = String::from_utf8_lossy(&buf[..size]);
+
+                    if let Ok(event) = SyslogListener::parse_syslog_message(&message) {
+                        if tx.send(event).await.is_err() {
+                            log::info!("Channel closed, stopping syslog listener");
+                            break;
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::error!("Syslog recv error: {}", e);
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Configuration for the ISDS daemon
@@ -10,6 +11,12 @@ pub struct Config {
     pub detection: DetectionConfig,
     /// Output configuration
     pub output: OutputConfig,
+    /// Persistence configuration
+    #[serde(default)]
+    pub persistence: PersistenceConfig,
+    /// Alerting configuration
+    #[serde(default)]
+    pub alerting: AlertConfig,
 }
 
 /// Input source configuration
@@ -36,6 +43,27 @@ pub struct DetectionConfig {
     pub rate_limit: RateLimitConfig,
     /// Geo velocity configuration
     pub geo_velocity: GeoVelocityConfig,
+    /// Geolocation configuration
+    #[serde(default)]
+    pub geo_location: GeoLocationConfig,
+}
+
+/// Geolocation configuration for IP-to-location lookups
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeoLocationConfig {
+    /// Enable geolocation lookups
+    pub enabled: bool,
+    /// Path to MaxMind GeoLite2-City.mmdb database file
+    pub database_path: Option<PathBuf>,
+}
+
+impl Default for GeoLocationConfig {
+    fn default() -> Self {
+        GeoLocationConfig {
+            enabled: true,
+            database_path: Some(PathBuf::from("GeoLite2-City.mmdb")),
+        }
+    }
 }
 
 /// Rate limiting configuration
@@ -65,6 +93,85 @@ pub struct OutputConfig {
     pub file_path: Option<PathBuf>,
 }
 
+/// Persistence configuration for state storage
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistenceConfig {
+    /// Enable persistent state storage
+    pub enabled: bool,
+    /// Path to SQLite database file
+    pub database_path: Option<PathBuf>,
+}
+
+impl Default for PersistenceConfig {
+    fn default() -> Self {
+        PersistenceConfig {
+            enabled: true,
+            database_path: Some(PathBuf::from("odin_state.db")),
+        }
+    }
+}
+
+/// Alerting configuration for webhooks
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlertConfig {
+    /// Enable alerting
+    pub enabled: bool,
+    /// Minimum severity to trigger alerts (1-10)
+    pub min_severity: u8,
+    /// Slack webhook configuration
+    pub slack: Option<SlackConfig>,
+    /// Discord webhook configuration
+    pub discord: Option<DiscordConfig>,
+    /// Generic webhook configurations
+    #[serde(default)]
+    pub webhooks: Vec<WebhookConfig>,
+}
+
+impl Default for AlertConfig {
+    fn default() -> Self {
+        AlertConfig {
+            enabled: false,
+            min_severity: 7,
+            slack: None,
+            discord: None,
+            webhooks: Vec::new(),
+        }
+    }
+}
+
+/// Slack webhook configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SlackConfig {
+    /// Slack webhook URL
+    pub webhook_url: String,
+    /// Channel to post to (optional)
+    pub channel: Option<String>,
+    /// Username for the bot (optional)
+    pub username: Option<String>,
+}
+
+/// Discord webhook configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscordConfig {
+    /// Discord webhook URL
+    pub webhook_url: String,
+    /// Username for the bot (optional)
+    pub username: Option<String>,
+}
+
+/// Generic webhook configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebhookConfig {
+    /// Name identifier for this webhook
+    pub name: String,
+    /// Webhook URL
+    pub url: String,
+    /// HTTP method (POST or PUT, defaults to POST)
+    pub method: Option<String>,
+    /// Custom headers to include
+    pub headers: Option<HashMap<String, String>>,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Config {
@@ -85,11 +192,14 @@ impl Default for Config {
                 geo_velocity: GeoVelocityConfig {
                     max_velocity_kmh: 900.0,
                 },
+                geo_location: GeoLocationConfig::default(),
             },
             output: OutputConfig {
                 format: "json".to_string(),
                 file_path: Some(PathBuf::from("anomalies.jsonl")),
             },
+            persistence: PersistenceConfig::default(),
+            alerting: AlertConfig::default(),
         }
     }
 }

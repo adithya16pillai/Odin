@@ -1,0 +1,55 @@
+[package]
+name = "odin"
+version = "0.1.0"
+edition = "2021"
+authors = ["Odin Team"]
+description = "Intrusion Detection System with anomaly detection capabilities"
+license = "MIT"
+readme = "README.md"
+
+[lib]
+name = "odin"
+path = "src/lib.rs"
+
+[[bin]]
+name = "isds_daemon"
+path = "src/bin/isds_daemon.rs"
+
+[[bin]]
+name = "isds_cli"
+path = "src/bin/isds_cli.rs"
+
+[dependencies]
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# Utilities
+regex = "1.10"
+log = "0.4"
+env_logger = "0.11"
+ctrlc = { version = "3.4", features = ["termination"] }
+structopt = "0.3"
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1.0"
+
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+
+# Persistence
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+# HTTP client for webhooks
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+# GeoIP lookup
+maxminddb = "0.24"
+
+[dev-dependencies]
+tempfile = "3.10"
+tokio-test = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = true

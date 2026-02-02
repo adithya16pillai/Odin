@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use crate::models::{LogEvent, AnomalyReport};
+use crate::persistence::StateStore;
 
 /// Geographic coordinates for IP location
 #[derive(Debug, Clone, Copy)]
@@ -10,10 +12,12 @@ pub struct GeoLocation {
 
 /// Tracks user login locations and timestamps for velocity analysis
 pub struct GeoVelocityTracker {
-    /// Maps user -> (last_timestamp, last_location)
+    /// Maps user -> (last_timestamp, last_location) (in-memory cache)
     user_locations: HashMap<String, (i64, GeoLocation)>,
     /// Maximum plausible travel speed in km/h (default: 900 km/h for commercial flight)
     max_velocity_kmh: f64,
+    /// Optional persistence backend
+    store: Option<Arc<dyn StateStore>>,
 }
 
 impl GeoVelocityTracker {
@@ -21,6 +25,7 @@ impl GeoVelocityTracker {
         GeoVelocityTracker {
             user_locations: HashMap::new(),
             max_velocity_kmh: 900.0,
+            store: None,
         }
     }
 
@@ -28,6 +33,16 @@ impl GeoVelocityTracker {
         GeoVelocityTracker {
             user_locations: HashMap::new(),
             max_velocity_kmh,
+            store: None,
+        }
+    }
+
+    /// Create a tracker with persistence support
+    pub fn with_persistence(max_velocity_kmh: f64, store: Arc<dyn StateStore>) -> Self {
+        GeoVelocityTracker {
+            user_locations: HashMap::new(),
+            max_velocity_kmh,
+            store: Some(store),
         }
     }
 
@@ -37,7 +52,33 @@ impl GeoVelocityTracker {
         event: &LogEvent,
         current_location: GeoLocation,
     ) -> Option<AnomalyReport> {
-        let result = match self.user_locations.get(&event.user) {
+        // First check in-memory cache
+        let cached_location = self.user_locations.get(&event.user).copied();
+
+        // If not in cache, try persistence backend
+        let last_location_data = match cached_location {
+            Some(data) => Some(data),
+            None => {
+                if let Some(ref store) = self.store {
+                    match store.get_user_last_location(&event.user) {
+                        Ok(Some((ts, loc))) => {
+                            // Populate cache from persistence
+                            self.user_locations.insert(event.user.clone(), (ts, loc));
+                            Some((ts, loc))
+                        }
+                        Ok(None) => None,
+                        Err(e) => {
+                            log::warn!("Failed to get user location from persistence: {}", e);
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            }
+        };
+
+        let result = match last_location_data {
             None => None,
             Some((last_timestamp, last_location)) => {
                 let time_diff_hours = (event.timestamp - last_timestamp) as f64 / 3600.0;
@@ -46,12 +87,12 @@ impl GeoVelocityTracker {
                 if time_diff_hours < 0.001 {
                     return Some(self.create_simultaneous_login_report(
                         event,
-                        last_location,
+                        &last_location,
                         &current_location,
                     ));
                 }
 
-                let distance_km = haversine_distance(*last_location, current_location);
+                let distance_km = haversine_distance(last_location, current_location);
                 let velocity_kmh = distance_km / time_diff_hours;
 
                 if velocity_kmh > self.max_velocity_kmh {
@@ -83,9 +124,20 @@ impl GeoVelocityTracker {
             }
         };
 
-        // Update the user's last known location
+        // Update both cache and persistence
         self.user_locations
             .insert(event.user.clone(), (event.timestamp, current_location));
+
+        if let Some(ref store) = self.store {
+            if let Err(e) = store.add_user_location(
+                &event.user,
+                event.timestamp,
+                &current_location,
+                &event.ip_address,
+            ) {
+                log::warn!("Failed to persist user location: {}", e);
+            }
+        }
 
         result
     }

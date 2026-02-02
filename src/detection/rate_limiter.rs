@@ -1,5 +1,12 @@
+//! Rate limiting detection for brute force attacks
+//!
+//! Tracks login attempt rates per user and per IP address to detect
+//! brute force attacks and credential stuffing.
+
 use std::collections::HashMap;
+use std::sync::Arc;
 use crate::models::{LogEvent, AnomalyReport};
+use crate::persistence::StateStore;
 
 /// Sliding window entry for tracking login attempts
 #[derive(Debug, Clone)]
@@ -26,7 +33,7 @@ impl WindowEntry {
 
 /// Tracks login attempt rates to detect brute force attacks
 pub struct LoginRateLimiter {
-    /// Maps (user OR ip) -> window entry
+    /// Maps (user OR ip) -> window entry (in-memory cache)
     per_user_attempts: HashMap<String, WindowEntry>,
     per_ip_attempts: HashMap<String, WindowEntry>,
     /// Time window in seconds (default: 300 = 5 minutes)
@@ -35,9 +42,12 @@ pub struct LoginRateLimiter {
     max_user_attempts: usize,
     /// Max attempts per IP within window
     max_ip_attempts: usize,
+    /// Optional persistence backend
+    store: Option<Arc<dyn StateStore>>,
 }
 
 impl LoginRateLimiter {
+    /// Create a new rate limiter with default thresholds
     pub fn new() -> Self {
         LoginRateLimiter {
             per_user_attempts: HashMap::new(),
@@ -45,6 +55,7 @@ impl LoginRateLimiter {
             window_seconds: 300,
             max_user_attempts: 10,
             max_ip_attempts: 20,
+            store: None,
         }
     }
 
@@ -60,23 +71,52 @@ impl LoginRateLimiter {
             window_seconds,
             max_user_attempts,
             max_ip_attempts,
+            store: None,
+        }
+    }
+
+    /// Create with persistence support
+    pub fn with_persistence(
+        window_seconds: i64,
+        max_user_attempts: usize,
+        max_ip_attempts: usize,
+        store: Arc<dyn StateStore>,
+    ) -> Self {
+        LoginRateLimiter {
+            per_user_attempts: HashMap::new(),
+            per_ip_attempts: HashMap::new(),
+            window_seconds,
+            max_user_attempts,
+            max_ip_attempts,
+            store: Some(store),
         }
     }
 
     /// Check for rate limit violations (returns up to 2 reports if both limits exceeded)
     pub fn check_rate_limit(&mut self, event: &LogEvent) -> Vec<AnomalyReport> {
         let mut reports = Vec::new();
+        let window_start = event.timestamp - self.window_seconds;
 
-        // Track per-user attempts
+        // Record the login attempt to persistence first
+        if let Some(ref store) = self.store {
+            if let Err(e) = store.add_login_attempt(&event.user, &event.ip_address, event.timestamp) {
+                log::warn!("Failed to persist login attempt: {}", e);
+            }
+        }
+
+        // Get user attempt count
+        let user_count = self.get_user_attempt_count_internal(&event.user, event.timestamp);
+
+        // Track per-user attempts in memory
         let user_entry = self
             .per_user_attempts
             .entry(event.user.clone())
             .or_insert_with(WindowEntry::new);
         user_entry.add_and_prune(event.timestamp, self.window_seconds);
 
-        if user_entry.count() > self.max_user_attempts {
+        if user_count > self.max_user_attempts {
             reports.push(AnomalyReport {
-                severity: Self::calculate_severity(user_entry.count(), self.max_user_attempts),
+                severity: Self::calculate_severity(user_count, self.max_user_attempts),
                 rule_name: "User Rate Limit Exceeded".to_string(),
                 user: event.user.clone(),
                 detected_ip: event.ip_address.to_string(),
@@ -86,24 +126,27 @@ impl LoginRateLimiter {
                     "User '{}' has {} login attempts in the last {} seconds (threshold: {}). \
                      Possible credential stuffing or brute force attack.",
                     event.user,
-                    user_entry.count(),
+                    user_count,
                     self.window_seconds,
                     self.max_user_attempts
                 ),
             });
         }
 
-        // Track per-IP attempts
+        // Get IP attempt count
         let ip_str = event.ip_address.to_string();
+        let ip_count = self.get_ip_attempt_count_internal(&ip_str, window_start);
+
+        // Track per-IP attempts in memory
         let ip_entry = self
             .per_ip_attempts
             .entry(ip_str.clone())
             .or_insert_with(WindowEntry::new);
         ip_entry.add_and_prune(event.timestamp, self.window_seconds);
 
-        if ip_entry.count() > self.max_ip_attempts {
+        if ip_count > self.max_ip_attempts {
             reports.push(AnomalyReport {
-                severity: Self::calculate_severity(ip_entry.count(), self.max_ip_attempts),
+                severity: Self::calculate_severity(ip_count, self.max_ip_attempts),
                 rule_name: "IP Rate Limit Exceeded".to_string(),
                 user: event.user.clone(),
                 detected_ip: ip_str,
@@ -113,7 +156,7 @@ impl LoginRateLimiter {
                     "IP {} has {} login attempts in the last {} seconds (threshold: {}). \
                      Possible distributed attack or compromised host.",
                     event.ip_address,
-                    ip_entry.count(),
+                    ip_count,
                     self.window_seconds,
                     self.max_ip_attempts
                 ),
@@ -123,7 +166,41 @@ impl LoginRateLimiter {
         reports
     }
 
-    /// Get current attempt count for a user
+    /// Get current attempt count for a user (checks both cache and persistence)
+    fn get_user_attempt_count_internal(&self, user: &str, current_timestamp: i64) -> usize {
+        let window_start = current_timestamp - self.window_seconds;
+
+        // Try persistence first for accurate count
+        if let Some(ref store) = self.store {
+            if let Ok(count) = store.get_user_attempt_count(user, window_start) {
+                return count;
+            }
+        }
+
+        // Fall back to in-memory cache
+        self.per_user_attempts
+            .get(user)
+            .map(|e| e.count())
+            .unwrap_or(0)
+    }
+
+    /// Get current attempt count for an IP (checks both cache and persistence)
+    fn get_ip_attempt_count_internal(&self, ip: &str, window_start: i64) -> usize {
+        // Try persistence first for accurate count
+        if let Some(ref store) = self.store {
+            if let Ok(count) = store.get_ip_attempt_count(ip, window_start) {
+                return count;
+            }
+        }
+
+        // Fall back to in-memory cache
+        self.per_ip_attempts
+            .get(ip)
+            .map(|e| e.count())
+            .unwrap_or(0)
+    }
+
+    /// Get current attempt count for a user (public interface)
     pub fn get_user_attempt_count(&self, user: &str) -> usize {
         self.per_user_attempts
             .get(user)
@@ -131,7 +208,7 @@ impl LoginRateLimiter {
             .unwrap_or(0)
     }
 
-    /// Get current attempt count for an IP
+    /// Get current attempt count for an IP (public interface)
     pub fn get_ip_attempt_count(&self, ip: &str) -> usize {
         self.per_ip_attempts
             .get(ip)
@@ -152,7 +229,7 @@ impl LoginRateLimiter {
         }
     }
 
-    /// Clear all tracking data
+    /// Clear all tracking data (in-memory only)
     pub fn clear_all(&mut self) {
         self.per_user_attempts.clear();
         self.per_ip_attempts.clear();
@@ -274,5 +351,47 @@ mod tests {
         let reports = limiter.check_rate_limit(&event);
 
         assert_eq!(reports.len(), 2, "Should trigger both user and IP limits");
+    }
+
+    #[test]
+    fn test_severity_calculation() {
+        // Just over threshold
+        assert_eq!(LoginRateLimiter::calculate_severity(11, 10), 7);
+        // 2x threshold
+        assert_eq!(LoginRateLimiter::calculate_severity(25, 10), 8);
+        // 3x+ threshold
+        assert_eq!(LoginRateLimiter::calculate_severity(35, 10), 9);
+        // 5x+ threshold
+        assert_eq!(LoginRateLimiter::calculate_severity(55, 10), 10);
+    }
+
+    #[test]
+    fn test_prune_stale() {
+        let mut limiter = LoginRateLimiter::with_config(60, 10, 10);
+
+        // Add some attempts
+        limiter.check_rate_limit(&create_event("user1", 1000, "1.1.1.1"));
+        limiter.check_rate_limit(&create_event("user1", 1010, "1.1.1.1"));
+
+        assert_eq!(limiter.get_user_attempt_count("user1"), 2);
+
+        // Prune with a timestamp far in the future
+        limiter.prune_stale(2000);
+
+        assert_eq!(limiter.get_user_attempt_count("user1"), 0);
+    }
+
+    #[test]
+    fn test_clear_all() {
+        let mut limiter = LoginRateLimiter::with_config(300, 10, 10);
+
+        limiter.check_rate_limit(&create_event("user1", 1000, "1.1.1.1"));
+        limiter.check_rate_limit(&create_event("user2", 1001, "2.2.2.2"));
+
+        limiter.clear_all();
+
+        assert_eq!(limiter.get_user_attempt_count("user1"), 0);
+        assert_eq!(limiter.get_user_attempt_count("user2"), 0);
+        assert_eq!(limiter.get_ip_attempt_count("1.1.1.1"), 0);
     }
 }

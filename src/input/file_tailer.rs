@@ -122,6 +122,116 @@ impl FileTailer {
     }
 }
 
+// ============================================
+// Async File Tailer
+// ============================================
+
+use tokio::fs::File as AsyncFile;
+use tokio::io::{AsyncBufReadExt, AsyncSeekExt, BufReader as AsyncBufReader};
+use tokio::sync::mpsc;
+use tokio::time::{sleep, Duration as TokioDuration};
+
+/// Async version of FileTailer for use with tokio
+pub struct AsyncFileTailer {
+    file_path: PathBuf,
+}
+
+impl AsyncFileTailer {
+    /// Create a new async file tailer
+    pub fn new(file_path: PathBuf) -> Self {
+        AsyncFileTailer { file_path }
+    }
+
+    /// Run the file tailer, sending events through the channel
+    ///
+    /// This method runs indefinitely until the channel is closed or
+    /// an unrecoverable error occurs.
+    pub async fn run(
+        &mut self,
+        tx: mpsc::Sender<LogEvent>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let file = AsyncFile::open(&self.file_path).await?;
+        let mut reader = AsyncBufReader::new(file);
+
+        // Seek to end of file to start tailing
+        reader.seek(std::io::SeekFrom::End(0)).await?;
+
+        log::info!("Async file tailer started for {:?}", self.file_path);
+
+        loop {
+            let mut line = String::new();
+
+            match reader.read_line(&mut line).await {
+                Ok(0) => {
+                    // EOF - wait for more data
+                    sleep(TokioDuration::from_millis(100)).await;
+                }
+                Ok(_) => {
+                    // Parse the line and send the event
+                    if let Ok(event) = Self::parse_log_line(&line) {
+                        if tx.send(event).await.is_err() {
+                            log::info!("Channel closed, stopping file tailer");
+                            break;
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::error!("Error reading file: {}", e);
+                    sleep(TokioDuration::from_secs(1)).await;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Parse a log line into a LogEvent (same logic as sync version)
+    fn parse_log_line(line: &str) -> Result<LogEvent, Box<dyn std::error::Error + Send + Sync>> {
+        // Try to extract IP address
+        let ip_pattern = regex::Regex::new(r"\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b")?;
+        let ip_addr = if let Some(cap) = ip_pattern.find(line) {
+            IpAddr::from_str(cap.as_str())?
+        } else {
+            IpAddr::from_str("0.0.0.0")?
+        };
+
+        // Try to extract username (after "for")
+        let user = if let Some(pos) = line.find("for ") {
+            let after_for = &line[pos + 4..];
+            if let Some(end_pos) = after_for.find(' ') {
+                after_for[..end_pos].to_string()
+            } else if let Some(end_pos) = after_for.find(" from") {
+                after_for[..end_pos].to_string()
+            } else {
+                "unknown".to_string()
+            }
+        } else {
+            "unknown".to_string()
+        };
+
+        // Get current timestamp
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs() as i64;
+
+        // Determine event type
+        let event_type = if line.contains("Accepted") || line.contains("Successful") {
+            "SSH_LOGIN".to_string()
+        } else if line.contains("Failed") || line.contains("Invalid") {
+            "SSH_FAILED".to_string()
+        } else {
+            "UNKNOWN".to_string()
+        };
+
+        Ok(LogEvent {
+            timestamp,
+            user,
+            ip_address: ip_addr,
+            event_type,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
